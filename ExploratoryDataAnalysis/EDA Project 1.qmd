@@ -1,0 +1,189 @@
+---
+title: "R Project #1"
+author: "David T Boyd"
+format: html
+editor: visual
+---
+
+## Exploratory Data Analysis (EDA): NYC 311 Service Requests
+
+### **Objective**
+
+Self-contained report that ingests the raw CSV, profiles missing data, cleans column types, and produces a narrative EDA with `ggplot2` — complaint volume by borough, top complaint types, and seasonal trends.
+
+### Thought Process
+
+Load necessary packages
+
+```{r}
+library(httr)
+library(jsonlite)
+library(socratadata)
+library(data.table)
+library(dplyr)
+library(bit64)
+#library(tidyverse)
+library(lubridate)
+library(ggplot2)
+library(scales)
+library(tigris)
+library(janitor)
+
+```
+
+Load the data, perform a summary analysis to understand data, structure and outliers
+
+```{r}
+
+df_311 <- fread("/home/davidtboyd/Data-Analysis-Portfolio-R/ExploratoryDataAnalysis/311_Service_Requests_from_2020_to_Present_20260509.csv")
+
+
+
+```
+
+Clean column names to standard names with underscores instead of spaces
+
+```{r}
+df_311 <- clean_names(df_311)
+```
+
+Get df header information (20 rows) and structure.
+
+```{r}
+head(df_311, 20)
+str(df_311)
+
+```
+
+Check non-character columns and determine if any can / should be converted to chr. In this example, Unique Key and BBL can be switched to chr. There are no calculations that would be performed on these
+
+```{r}
+
+Filter(Negate(is.character), df_311)  # returns the actual columns, not just their types
+```
+
+Convert ID fields into 'chr' data types and convert date fields to date types
+
+```{r}
+df_311 <- df_311 |> mutate(
+  `unique_key` = as.character(`unique_key`),
+  bbl = as.character(bbl),
+  'created_date' = mdy_hms(`created_date`),
+  'closed_date' = mdy_hms(`closed_date`),
+  'due_date' = mdy_hms(`due_date`),
+  'resolution_action_updated_date' = mdy_hms(`resolution_action_updated_date`)
+    )
+
+```
+
+From the output of str(df_311) need to look at columns that appear to have excessive null values e.g. Vehicle Type, Taxi Company Borough, etc.. Based on the output only BBL needs to be addressed.
+
+```{r}
+na_pct <- colMeans(is.na(df_311)) * 100
+na_pct[na_pct > 2]
+
+```
+
+Let's find the minimum and maximum date, based on Created Date
+
+```{r}
+start_date = min(df_311$`created_date`, na.rm = TRUE)
+finish_date = max(df_311$`created_date`, na.rm = TRUE)
+print(start_date)
+print(finish_date)
+
+```
+
+Let's export 1000 rows to a csv file for inspection in Excel if necessary
+
+```{r}
+set.seed(76)
+top1000 <- df_311 %>% slice_sample(n = 1000)
+write.csv(top1000, "311_Sample.csv", row.names = FALSE)
+
+```
+
+1st Request: Complaint Volume by Borough
+
+We need to create a new df for complaints filtered by agency, so I will pull the distinct values for Agency
+
+```{r}
+df_agencies <- df_311 %>% distinct(`agency`)
+df_boroughs <- df_311 |> distinct(`borough`)
+print(df_agencies)
+print(df_boroughs)
+
+
+```
+
+based on this list, we will be seeking only calls for NYPD.
+
+```{r}
+df_complaints <- filter(df_311, agency == "NYPD")
+
+```
+
+Created basic bar chart
+
+```{r}
+df_311 %>%
+  group_by(borough) %>%
+  summarise(count = n()) %>%
+  ggplot(aes(x = borough, y = count)) +
+  geom_bar(stat = "identity") +
+  scale_y_continuous(labels = label_number(scale = 1/1000000, suffix = "M", accuracy = 0.1))
+```
+
+```{r}
+borough_counts <- df_311 %>%
+  filter(!is.na(borough), borough != "Unspecified") %>%
+  mutate(borough = tolower(borough)) %>%
+  count(borough, name = "calls")
+
+nyc_boroughs <- counties(state = "NY", cb = TRUE, class = "sf") %>%
+  filter(NAME %in% c("New York", "Bronx", "Queens", "Kings", "Richmond")) %>%
+  mutate(Borough = case_when(
+    NAME == "New York" ~ "MANHATTAN",
+    NAME == "Kings"    ~ "BROOKLYN",
+    NAME == "Richmond" ~ "STATEN ISLAND",
+    TRUE               ~ toupper(NAME)
+  ))
+
+clean_names(nyc_boroughs)
+
+nyc_choropleth <- nyc_boroughs %>%
+  mutate(Borough = tolower(Borough)) %>%
+  left_join(borough_counts, by = c("Borough" = "borough"))
+
+ggplot(nyc_choropleth) +
+  geom_sf(aes(fill = calls), color = "white", linewidth = 0.6) +
+  geom_sf_label(aes(label = paste0(Borough, "\n", comma(calls))),
+                size = 3, label.size = 0) +
+  scale_fill_viridis_c(name = "311 Calls", labels = comma) +
+  theme_void() +
+  labs(title = "NYC 311 Calls by Borough")
+```
+
+The previous map uses black text on all shadings which makes Stanten Island difficult to read. Updated code to use white lettering with darker backgrounds
+
+```{r}
+nyc_choropleth <- nyc_choropleth %>%
+  mutate(
+    scaled = (calls - min(calls, na.rm = TRUE)) / 
+             (max(calls, na.rm = TRUE) - min(calls, na.rm = TRUE)),
+    text_color = if_else(scaled < 0.4, "white", "black")
+  )
+
+ggplot(nyc_choropleth) +
+  geom_sf(aes(fill = calls), color = "white", linewidth = 0.6) +
+  geom_sf_label(
+    aes(label = paste0(Borough, "\n", comma(calls)), color = text_color),
+    size = 3, label.size = 0
+  ) +
+  scale_fill_viridis_c(name = "311 Calls", labels = comma) +
+  scale_color_identity() +  # tells ggplot to use the color values as-is
+  theme_void() +
+  labs(title = "NYC 311 Calls by Borough")
+```
+
+Test the Seasonal-Trends branch

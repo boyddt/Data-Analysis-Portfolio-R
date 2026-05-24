@@ -1,0 +1,9 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+.positai
+.RDataTmp
+
+# Large raw data files
+311_Service_Requests_from_2020_to_Present_*.csv
